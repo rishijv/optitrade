@@ -1,15 +1,23 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:yahoo_finance_data_reader/yahoo_finance_data_reader.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 import '../services/api_service.dart';
-import 'dart:math';
-import 'package:intl/intl.dart'; // For date formatting
 
-// A simple model for chart data (used for the moving average series)
+// A simple model for SMA overlay
 class ChartData {
   final DateTime date;
   final double value;
   ChartData(this.date, this.value);
+}
+
+// Model for Bollinger Bands data
+class BollingerBandData {
+  final DateTime date;
+  final double lower;
+  final double upper;
+  BollingerBandData(this.date, this.lower, this.upper);
 }
 
 class StockDetailsPage extends StatefulWidget {
@@ -24,6 +32,7 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
   late Future<YahooFinanceResponse> futureData;
   final ApiService apiService = ApiService();
   bool showAverage = false;
+  bool showBollinger = false;
   late TooltipBehavior _tooltipBehavior;
 
   @override
@@ -42,12 +51,37 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
     return data.where((candle) => candle.date.isAfter(sixMonthsAgo)).toList();
   }
 
+  // Compute Bollinger Bands based on a 20-day period
+  List<BollingerBandData> computeBollingerBands(
+      List<YahooFinanceCandleData> data) {
+    List<BollingerBandData> bands = [];
+    const int period = 20;
+    for (int i = period - 1; i < data.length; i++) {
+      double sum = 0;
+      for (int j = 0; j < period; j++) {
+        sum += data[i - j].close;
+      }
+      double sma = sum / period;
+      double sumSquaredDiff = 0;
+      for (int j = 0; j < period; j++) {
+        double diff = data[i - j].close - sma;
+        sumSquaredDiff += diff * diff;
+      }
+      double stdDev = sqrt(sumSquaredDiff / period);
+      double upperBand = sma + (stdDev * 2);
+      double lowerBand = sma - (stdDev * 2);
+      bands.add(BollingerBandData(data[i].date, lowerBand, upperBand));
+    }
+    return bands;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.ticker} - Last 6 Months'),
         actions: [
+          // Toggle button for SMA overlay
           IconButton(
             icon: Icon(showAverage ? Icons.show_chart : Icons.trending_up),
             onPressed: () {
@@ -55,7 +89,18 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
                 showAverage = !showAverage;
               });
             },
-            tooltip: 'Toggle Average Line',
+            tooltip: 'Toggle SMA Overlay',
+          ),
+          // Toggle button for Bollinger Bands overlay
+          IconButton(
+            icon: Icon(
+                showBollinger ? Icons.stacked_line_chart : Icons.bar_chart),
+            onPressed: () {
+              setState(() {
+                showBollinger = !showBollinger;
+              });
+            },
+            tooltip: 'Toggle Bollinger Bands Overlay',
           ),
         ],
       ),
@@ -70,7 +115,7 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
             return const Center(child: Text('No data available'));
           }
 
-          // Get and filter data to last 6 months
+          // Filter data to last 6 months
           final allData = snapshot.data!.candlesData;
           final filteredData = filterLastSixMonths(allData);
 
@@ -87,7 +132,7 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
                 // Price Information Card
                 _buildPriceInfoCard(filteredData.last),
                 const SizedBox(height: 20),
-                // Stock Chart using Syncfusion Flutter Charts
+                // Stock Chart with overlays
                 Expanded(
                   child: _buildStockChart(filteredData),
                 ),
@@ -143,8 +188,14 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
   }
 
   Widget _buildStockChart(List<YahooFinanceCandleData> data) {
-    // Compute moving average data if enabled
-    List<ChartData> movingAverageData = [];
+    // Compute the fixed Y-axis scale based on the close price
+    double minClose = data.map((d) => d.close).reduce(min);
+    double maxClose = data.map((d) => d.close).reduce(max);
+    double yMin = minClose - 10;
+    double yMax = maxClose + 10;
+
+    // Compute SMA data for overlay if enabled
+    List<ChartData> averageSpots = [];
     if (showAverage && data.length >= 20) {
       const int movingAveragePeriod = 20;
       for (int i = movingAveragePeriod - 1; i < data.length; i++) {
@@ -153,8 +204,14 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
           sum += data[i - j].close;
         }
         final average = sum / movingAveragePeriod;
-        movingAverageData.add(ChartData(data[i].date, average));
+        averageSpots.add(ChartData(data[i].date, average));
       }
+    }
+
+    // Compute Bollinger Bands data for overlay if enabled
+    List<BollingerBandData> bollingerData = [];
+    if (showBollinger && data.length >= 20) {
+      bollingerData = computeBollingerBands(data);
     }
 
     return SfCartesianChart(
@@ -168,6 +225,8 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
       ),
       primaryYAxis: NumericAxis(
         labelFormat: '\${value}',
+        minimum: yMin,
+        maximum: yMax,
       ),
       series: <CartesianSeries>[
         // Main price series
@@ -179,16 +238,30 @@ class _StockDetailsPageState extends State<StockDetailsPage> {
           markerSettings: MarkerSettings(isVisible: true),
           enableTooltip: true,
         ),
-        // 20-Day Moving Average series (if enabled)
-        if (showAverage && movingAverageData.isNotEmpty)
+        // 20-day SMA overlay
+        if (showAverage && averageSpots.isNotEmpty)
           LineSeries<ChartData, DateTime>(
-            dataSource: movingAverageData,
+            dataSource: averageSpots,
             xValueMapper: (ChartData chartData, _) => chartData.date,
             yValueMapper: (ChartData chartData, _) => chartData.value,
-            name: '20-Day Moving Average',
+            name: '20-Day SMA',
             dashArray: <double>[5, 5],
             color: Colors.orange,
             markerSettings: MarkerSettings(isVisible: false),
+            enableTooltip: true,
+          ),
+        // Bollinger Bands overlay using a RangeAreaSeries
+        if (showBollinger && bollingerData.isNotEmpty)
+          RangeAreaSeries<BollingerBandData, DateTime>(
+            dataSource: bollingerData,
+            xValueMapper: (BollingerBandData band, _) => band.date,
+            highValueMapper: (BollingerBandData band, _) => band.upper,
+            lowValueMapper: (BollingerBandData band, _) => band.lower,
+            name: 'Bollinger Bands',
+            opacity: 0.2,
+            color: Colors.purple.withOpacity(0.2),
+            borderColor: Colors.purple,
+            borderDrawMode: RangeAreaBorderMode.excludeSides,
             enableTooltip: true,
           ),
       ],
