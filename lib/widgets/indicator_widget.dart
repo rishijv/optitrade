@@ -4,7 +4,8 @@ class IndicatorWidget extends StatelessWidget {
   final String indicatorName;
   final double value;
 
-  const IndicatorWidget({super.key, required this.indicatorName, required this.value});
+  const IndicatorWidget(
+      {super.key, required this.indicatorName, required this.value});
 
   @override
   Widget build(BuildContext context) {
